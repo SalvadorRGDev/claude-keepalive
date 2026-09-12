@@ -75,20 +75,25 @@ hours_pad() {
   printf '%s' "$out"
 }
 
-# Advise on a schedule without refusing it. Three cases, and only one is a
-# mistake:
+# Advise on a schedule without refusing it.
 #
-#   gap == window   every boundary is pinned; the chain never drifts
-#   gap >  window   fewer, deliberately placed windows. The boundaries inside the
-#                   gap follow your own activity instead of the clock. A valid
-#                   and common choice — see "Choosing your hours" in the README.
-#   gap <  window   the later ping lands inside the window the earlier one opened,
-#                   so it opens nothing. That one is just a wasted request.
+# A ping is only ever effective if no window is open when it fires. Given a gap
+# of G hours from the previous scheduled hour, there are three cases:
 #
-# Returns non-zero only for the last case. The overnight wrap-around is not
-# checked, since a long gap there is the normal shape of a working day.
+#   G % window == 0   The ping lands exactly on a boundary of the chain started
+#                     by the earlier hour, whether or not you kept working.
+#                     Always effective. This is the robust shape.
+#   G <  window       The ping lands inside the window the earlier one opened,
+#                     so it opens nothing, ever. A wasted request.
+#   otherwise         It lands mid-window if you worked straight through, and
+#                     opens a window only if you were genuinely idle. Effective
+#                     conditionally — fine for a schedule built around a real
+#                     break, misleading otherwise.
+#
+# Returns non-zero only for the always-wasted case. The overnight wrap-around is
+# not checked, since a long gap there is the normal shape of a working day.
 hours_advise() {
-  local hours=$1 window=$2 arr h prev="" gap wasteful=0 wide=0
+  local hours=$1 window=$2 arr h prev="" gap wasteful=0 conditional="" ncond=0
   IFS=',' read -ra arr <<<"$hours"
   if [ "${#arr[@]}" -lt 2 ]; then
     return 0
@@ -99,19 +104,33 @@ hours_advise() {
       if [ "$gap" -lt "$window" ]; then
         printf 'warning: %02d:00 is only %dh after %02d:00, less than a %dh window.\n' \
           "$h" "$gap" "$prev" "$window" >&2
-        printf '         That ping lands inside the window opened at %02d:00 and\n' "$prev" >&2
-        printf '         opens nothing. Drop it, or space them %dh apart.\n' "$window" >&2
+        printf '         It lands inside the window opened at %02d:00 and opens\n' "$prev" >&2
+        printf '         nothing, ever. Drop it, or move it to %02d:00.\n' \
+          "$(((prev + window) % 24))" >&2
         wasteful=1
-      elif [ "$gap" -gt "$window" ]; then
-        wide=1
+      elif [ $((gap % window)) -ne 0 ]; then
+        conditional="${conditional:+$conditional, }$(printf '%02d:00' "$h")"
+        ncond=$((ncond + 1))
       fi
     fi
     prev=$h
   done
-  if [ "$wide" -eq 1 ] && [ "$wasteful" -eq 0 ]; then
-    printf 'note: some gaps are wider than %dh, so those windows expire before the\n' "$window" >&2
-    printf '      next ping. That is a deliberate schedule, not a problem — you get\n' >&2
-    printf '      windows exactly where you asked for them.\n' >&2
+  if [ -n "$conditional" ] && [ "$wasteful" -eq 0 ]; then
+    local verb="does" subj="it" miss="misses" each="It"
+    if [ "$ncond" -gt 1 ]; then
+      verb="do"
+      subj="they"
+      miss="miss"
+      each="Each"
+    fi
+    printf 'note: %s %s not sit a whole number of %dh windows after the hour\n' \
+      "$conditional" "$verb" "$window" >&2
+    printf '      before, so %s %s the window boundaries. %s opens a window only\n' \
+      "$subj" "$miss" "$each" >&2
+    printf '      when you are genuinely away from the keyboard; if you worked\n' >&2
+    printf '      straight through, a window is already open and the ping does\n' >&2
+    printf '      nothing. Intentional for a schedule built around a real break —\n' >&2
+    printf '      see "Choosing your hours" in the README.\n' >&2
   fi
   return "$wasteful"
 }

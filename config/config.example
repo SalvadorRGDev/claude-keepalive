@@ -4,13 +4,15 @@
 # Hours of the day at which to open a Claude usage window.
 #
 # A ping only ever OPENS a window — it cannot close one early or move a
-# boundary. So these hours are guaranteed window starts, and picking them is how
-# you decide when your resets land. Spacing them exactly WINDOW_HOURS apart
-# ("6,11,16,21") pins every boundary; spacing them wider ("6,14,22", "6,18")
-# gives you fewer windows placed exactly where your working day needs them.
+# boundary, so it accomplishes something only when no window is open as it fires.
+# Keep the hours a whole number of WINDOW_HOURS apart and each one lands exactly
+# on a boundary, so none is ever wasted: "8,13" for two sessions over an ordinary
+# day, "8,13,18" for two blocks with a break, "6,11,16,21" for continuous
+# coverage. An hour that is not a multiple away (say the 18:00 in "6,18") only
+# opens a window if you are genuinely idle when it fires.
 # See "Choosing your hours" in the README.
 #
-# Change these with `claude-keepalive schedule 6,18` rather than by hand —
+# Change these with `claude-keepalive schedule 8,13` rather than by hand —
 # editing this line alone does not update the systemd timer or crontab.
 HOURS="6,11,16,21"
 

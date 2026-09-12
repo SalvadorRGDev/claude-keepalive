@@ -36,90 +36,127 @@ ambushed by it.
 **A ping can only ever *open* a window. It can never close one early, and it can
 never move a boundary.**
 
-Everything else follows from that:
+So a ping accomplishes something only if no window is open at the moment it
+fires. There is exactly one way to guarantee that mechanically: place it a **whole
+number of windows** after another scheduled hour, so it lands precisely on a
+boundary.
 
-| Spacing between two hours | What happens |
+| Gap from the previous scheduled hour | What the ping does |
 |---|---|
-| **exactly 5 h** | The second ping fires at the instant the first window expires, so it opens the next one immediately. Every boundary is pinned; nothing drifts. |
-| **more than 5 h** | The window from the first ping expires before the second arrives. The hours you listed are *guaranteed* window starts; boundaries in between follow your own activity. A deliberate, useful schedule. |
-| **less than 5 h** | The second ping lands inside a window that is already open, so it opens nothing. A wasted request. `install.sh` and `schedule` both warn about this one. |
+| **a multiple of 5 h** (5, 10, 15…) | Lands exactly on a boundary of the chain. Effective whether or not you kept working. The robust shape. |
+| **less than 5 h** | Lands inside the window the earlier hour opened. Opens nothing, ever. `install.sh` and `schedule` warn about it. |
+| **anything else** (8 h, 12 h…) | Lands mid-window if you worked straight through, so it only does something when you were genuinely away. Deliberate for a real break; a trap otherwise. |
 
-A useful consequence: placing a ping *before* you sit down deliberately spends
-part of the window's clock while you are away, so your **first reset arrives
-earlier in your working day**. If you tend to burn an allowance in two or three
-hours, an earlier reset is worth more to you than a later one.
+### Why `6,14,22` looks reasonable and is not
+
+It reads like three sessions for three work blocks. Follow it hour by hour, for
+someone who starts at 08:00 and keeps going:
+
+```
+06:00   ping opens a window                    → expires 11:00
+08:00   you start working
+11:00   the window expires, and since you are still at the keyboard your
+        own next message opens the following one → expires 16:00
+14:00   ping fires INSIDE that window           → opens nothing. Wasted.
+```
+
+Eight hours is not a multiple of five, so 14:00 misses the boundary at 11:00 and
+misses the next one at 16:00 too. The schedule promises three sessions and
+delivers two. `schedule` now prints a note when an hour sits off the boundaries
+like this.
 
 ## Choosing your hours
 
-There is no single right schedule. Pick the hours where you want a window
-guaranteed to exist, then read the resets off the clock.
+### A normal two-session workday — `8,13`
 
-### Continuous coverage — `6,11,16,21`
-
-Five hours apart, so every boundary is pinned. A window is always open from
-06:00 until 02:00 the next morning.
+The one to copy if you just want two sessions covering an ordinary day.
 
 ```
-06:00   ping  →  window opens, expires 11:00
-11:00   ping  →  fires exactly as that one expires; window to 16:00
-16:00   ping  →  window to 21:00
-21:00   ping  →  window to 02:00
+08:00   ping → session 1 opens                 → expires 13:00
+13:00   ping → fires exactly as it expires,
+               so session 2 opens here         → expires 18:00
+18:00   you stop; nothing is scheduled after
 ```
 
-Your resets land at **11:00, 16:00, 21:00 and 02:00**, every single day,
-regardless of what you did in between. Pick this if you work unpredictable hours
-and just want the boundaries to stop moving.
+Two full sessions spanning 08:00–18:00, with resets at **13:00 and 18:00** every
+day. Five hours apart, so both pings land on boundaries and neither can ever be
+wasted — it does not matter whether you worked straight through the morning or
+stepped out at 11:00, session 2 still starts at 13:00.
 
-### Three work blocks — `6,14,22`
+### Front-loading, to reach the first reset sooner — `6,11,16`
 
-Not five hours apart, and that is the point. Say you start work at 08:00:
+Same 08:00 start, but the first ping goes at 06:00 on purpose.
 
 ```
-06:00   ping  →  window opens, expires 11:00
-08:00   you start working — 3 h of that window left
-11:00   reset. If you keep going, your own next message opens the following one
-14:00   ping  →  guarantees a window for your afternoon block
-22:00   ping  →  guarantees one for your night block
+06:00   ping → window opens                    → expires 11:00
+08:00   you start — 3 h of that window left
+11:00   reset → session 2                      → expires 16:00
+16:00   reset → session 3                      → expires 21:00
 ```
 
-By putting the ping two hours before you sit down, the window's clock is already
-running when you arrive, so your first reset lands at **11:00 instead of 13:00**.
-You only have to work three hours to reach it rather than five. If you burn
-through an allowance quickly, that is exactly the trade you want.
+You reach your first reset after **three hours of work instead of five**. If you
+tend to burn an allowance in two or three hours, an earlier boundary is worth
+more to you than a later one. The 06:00–08:00 stretch spent while you are away
+costs nothing, because the allowance is per window, not per hour — see below.
 
 ### Two blocks with a real break — `6,18`
 
-Mornings 08:00–13:00, evenings from 20:00, nothing in between:
+Mornings from 08:00, evenings from 20:00, genuinely away in between.
 
 ```
-06:00   ping  →  window opens, expires 11:00
+06:00   ping → window opens                    → expires 11:00
 08:00   you start
 11:00   reset; your next message carries you through to 13:00
-13:00   you stop — and nothing is scheduled here, so no ping is spent
+13:00   you stop — nothing is scheduled here, so no ping is spent
         while you are away from the keyboard
-18:00   ping  →  window opens, expires 23:00
+16:00   that window quietly expires with you not in it
+18:00   ping → nothing is open, so it opens a session → expires 23:00
 20:00   you start — 3 h left, reset at 23:00
 ```
 
-There is no ping at 13:00 precisely *because* you are not working then. You spend
-pings only where they buy you something, and both of your working blocks begin
-inside a window whose reset time you already know.
+Twelve hours is not a multiple of five, so `schedule` prints a note about 18:00.
+The note is right to be cautious and you are right to ignore it *here*: the ping
+works because the break is real. Stay at the keyboard past 16:00 and a window
+will already be open at 18:00, and that ping does nothing.
+
+If you want the same two blocks without depending on the break actually
+happening, use **`8,13,18`** instead. Every hour is five apart, so 18:00 lands on
+a boundary regardless of what you did at lunch. The price is the 13:00 ping
+opening a window you mostly will not use — one trivial request.
+
+### Continuous coverage — `6,11,16,21`
+
+The default, and the set-and-forget option. Five hours apart all the way, so a
+window is always open from 06:00 until 02:00 the next morning.
+
+```
+06:00   ping → window to 11:00
+11:00   ping → window to 16:00
+16:00   ping → window to 21:00
+21:00   ping → window to 02:00
+```
+
+Resets at **11:00, 16:00, 21:00 and 02:00**, every day, regardless of what you
+did in between. Pick this if your hours are unpredictable and you simply want the
+boundaries to stop moving.
 
 ### The point
 
 The schedule is a list of statements: *"guarantee me a window at this hour."*
-Line those hours up with the starts of your working blocks and you get absolute
-control over when Claude's windows open — and therefore over when your resets
-arrive. The tool warns you only about pings that cannot possibly do anything
-(closer together than a window); every wider spacing is a legitimate choice about
-the shape of your day.
+Line those hours up with the starts of your working blocks — keeping them a whole
+number of windows apart wherever you cannot promise you will be away — and you
+get absolute control over when Claude's windows open, and therefore over when
+your resets arrive.
 
-Change your mind at any time:
+The tool refuses nothing. It warns about pings that can never do anything, notes
+the ones whose usefulness depends on you actually being idle, and stays quiet
+about the rest.
 
 ```sh
-claude-keepalive schedule 6,11,16,21   # continuous
-claude-keepalive schedule 6,14,22      # three blocks
-claude-keepalive schedule 6,18         # two blocks
+claude-keepalive schedule 8,13          # two sessions, ordinary workday
+claude-keepalive schedule 6,11,16       # front-loaded, earlier first reset
+claude-keepalive schedule 8,13,18       # two blocks, break-proof
+claude-keepalive schedule 6,11,16,21    # continuous coverage
 ```
 
 ## Why pings are unconditional
@@ -190,7 +227,7 @@ yourself.
 claude-keepalive status              # next ping, window state, recent log
 claude-keepalive test                # print the exact ping command, send nothing
 claude-keepalive schedule            # show the active schedule
-claude-keepalive schedule 6,18       # change the hours in place, no reinstall
+claude-keepalive schedule 8,13       # change the hours in place, no reinstall
 claude-keepalive logs 20             # recent log lines
 claude-keepalive ping                # what the timer calls
 ```
@@ -200,8 +237,8 @@ claude-keepalive ping                # what the timer calls
 ### Changing the hours
 
 ```sh
-claude-keepalive schedule 6,14,22
-claude-keepalive schedule --hours "6,14,22"    # same thing
+claude-keepalive schedule 8,13
+claude-keepalive schedule --hours "8,13"    # same thing
 ```
 
 This rewrites the systemd timer (or crontab entry, or launchd plist), reloads the

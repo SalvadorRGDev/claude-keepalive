@@ -196,11 +196,13 @@ cat <<EOF
 
   $PROGRAM status            window state and next scheduled run
   $PROGRAM test              dry-run a ping without sending one
-  $PROGRAM schedule 7,12,17,22   change the hours, no reinstall
+  $PROGRAM schedule 8,13     change the hours, no reinstall
   ./uninstall.sh             revert everything in the manifest
 
   manifest: $MANIFEST
 
-Reminder: this grants no extra quota. It anchors your window boundaries to
-fixed hours so you always know when the next reset lands. See README.md.
+Reminder: this grants no extra quota. It decides the hours at which a window
+opens, so you always know when the next reset lands. Keep your hours a whole
+number of windows apart and none of them is ever wasted — see "Choosing your
+hours" in README.md.
 EOF

@@ -97,28 +97,44 @@ recent_activity() {
   [ "$status" -ne 0 ]
 }
 
-@test "exact 5h spacing is silently fine" {
+@test "hours a whole number of windows apart are silently fine" {
   . "$REPO/lib/backend.sh"
-  run hours_advise "6,11,16,21" 5
+  for h in "8,13" "6,11,16" "6,11,16,21" "8,13,18"; do
+    run hours_advise "$h" 5
+    [ "$status" -eq 0 ]
+    [ -z "$output" ]
+  done
+}
+
+@test "a gap of two whole windows also lands on a boundary" {
+  . "$REPO/lib/backend.sh"
+  # 06:00 -> 16:00 is 10h, exactly two windows, so 16:00 is a boundary of the
+  # chain 06-11, 11-16. No advice needed.
+  run hours_advise "6,16" 5
   [ "$status" -eq 0 ]
   [ -z "$output" ]
 }
 
-@test "gaps wider than a window are accepted as a deliberate choice" {
+@test "hours off the boundaries are noted as conditional, not rejected" {
   . "$REPO/lib/backend.sh"
-  run hours_advise "6,14,22" 5
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"deliberate schedule"* ]]
-
   run hours_advise "6,18" 5
   [ "$status" -eq 0 ]
+  [[ "$output" == *"genuinely away"* ]]
+  [[ "$output" == *"18:00 does not sit"* ]]
+
+  # The schedule that reads like three sessions but delivers two.
+  run hours_advise "6,14,22" 5
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"14:00, 22:00 do not sit"* ]]
 }
 
 @test "gaps narrower than a window are flagged as wasted pings" {
   . "$REPO/lib/backend.sh"
   run hours_advise "6,10,14" 5
   [ "$status" -ne 0 ]
-  [[ "$output" == *"opens nothing"* ]]
+  [[ "$output" == *"opens"* ]]
+  [[ "$output" == *"nothing, ever"* ]]
+  [[ "$output" == *"move it to 11:00"* ]]
 }
 
 # ---- generated units --------------------------------------------------------
@@ -232,4 +248,15 @@ recent_activity() {
 @test "config example no longer ships SKIP_IF_ACTIVE as an option" {
   ! grep -qE '^SKIP_IF_ACTIVE=' "$REPO/config/config.example"
   ! grep -qE '^#SKIP_IF_ACTIVE=' "$REPO/config/config.example"
+}
+
+@test "the README documents only schedules the tool stays quiet about" {
+  # Every hour list offered as a recommendation in the schedule examples block
+  # must be one hours_advise does not warn about.
+  . "$REPO/lib/backend.sh"
+  while read -r h; do
+    run hours_advise "$h" 5
+    [ "$status" -eq 0 ]
+  done < <(sed -n '/^claude-keepalive schedule [0-9]/s/^claude-keepalive schedule \([0-9,]*\).*/\1/p' \
+    "$REPO/README.md" | sort -u)
 }

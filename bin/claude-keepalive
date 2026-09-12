@@ -323,18 +323,17 @@ commands:
   test                  Dry run: print the exact ping command, send nothing
   schedule              Show the active schedule
   schedule <hours>      Change the hours in place, no reinstall
-                        e.g. $PROGRAM schedule 6,11,16,21
-                             $PROGRAM schedule 6,18
-                             $PROGRAM schedule --hours "6,14,22"
+                        e.g. $PROGRAM schedule 8,13
+                             $PROGRAM schedule 8,13,18
+                             $PROGRAM schedule --hours "6,11,16,21"
   status                Binary, config, next ping, window state, recent log
   logs [n]              Last n log lines (default 50)
   version               Print version
 
-A ping only ever opens a window; it cannot close one early or move a boundary.
-So the hours you pick are guaranteed window starts. Spacing them exactly
-WINDOW_HOURS apart ($WINDOW_HOURS h) pins every boundary; spacing them wider
-gives you fewer, deliberately placed windows. Both are valid — see the
-"Choosing your hours" section of the README.
+A ping only ever opens a window; it cannot close one early or move a boundary, so
+it accomplishes something only if no window is open when it fires. Keep your hours
+a whole number of windows apart ($WINDOW_HOURS h) and every one lands on a
+boundary. See the "Choosing your hours" section of the README.
 
 config: $CONFIG_FILE
 log:    $LOG_FILE
