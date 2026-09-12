@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+#
+# claude-keepalive — opens a Claude usage window on a schedule, but only when
+# one isn't open already.
+#
+# This does NOT grant extra quota. See README.md.
+
+set -euo pipefail
+
+VERSION="1.0.0"
+PROGRAM="claude-keepalive"
+
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+: "${XDG_STATE_HOME:=$HOME/.local/state}"
+
+CONFIG_FILE="$XDG_CONFIG_HOME/$PROGRAM/config"
+STATE_DIR="$XDG_STATE_HOME/$PROGRAM"
+LOG_FILE="$STATE_DIR/log"
+MANIFEST="$STATE_DIR/install-manifest"
+LOCK_FILE="${XDG_RUNTIME_DIR:-/tmp}/$PROGRAM.lock"
+
+# ---- defaults (override these in $CONFIG_FILE) ------------------------------
+CLAUDE_BIN=""                            # empty = auto-discover
+CLAUDE_HOME="$HOME/.claude"
+MODEL="claude-haiku-4-5-20251001"        # cheapest model; the window is shared
+PROMPT="ok"
+SKIP_IF_ACTIVE=1                         # don't ping if a window is already open
+WINDOW_HOURS=5                           # length of a Claude usage window
+MAX_BUDGET_USD="0.05"                    # hard spend ceiling per ping
+PING_TIMEOUT=120                         # seconds before the ping is killed
+LOG_MAX_LINES=500
+
+# shellcheck source=/dev/null
+[ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
+
+# ---- helpers ----------------------------------------------------------------
+
+log() {
+  mkdir -p "$STATE_DIR"
+  printf '%s  %s\n' "$(date '+%Y-%m-%d %H:%M:%S%z')" "$*" >>"$LOG_FILE"
+}
+
+rotate_log() {
+  [ -f "$LOG_FILE" ] || return 0
+  local lines
+  lines=$(wc -l <"$LOG_FILE")
+  [ "$lines" -le "$LOG_MAX_LINES" ] && return 0
+  tail -n "$LOG_MAX_LINES" "$LOG_FILE" >"$LOG_FILE.tmp" && mv "$LOG_FILE.tmp" "$LOG_FILE"
+}
+
+die() {
+  printf '%s: %s\n' "$PROGRAM" "$*" >&2
+  exit 1
+}
+
+fmt_dur() {
+  local s=$1
+  printf '%dh%02dm' $((s / 3600)) $(((s % 3600) / 60))
+}
+
+# Locate the claude CLI. Never hardcode a path: installs vary by platform and
+# by install method (native package, npm, local installer, homebrew).
+find_claude() {
+  local c
+  if [ -n "$CLAUDE_BIN" ]; then
+    [ -x "$CLAUDE_BIN" ] && { printf '%s' "$CLAUDE_BIN"; return 0; }
+    return 1
+  fi
+  for c in \
+    "$(command -v claude 2>/dev/null || true)" \
+    "$HOME/.claude/local/claude" \
+    "$HOME/.local/bin/claude" \
+    "/usr/local/bin/claude" \
+    "/usr/bin/claude" \
+    "/opt/homebrew/bin/claude"; do
+    [ -n "$c" ] && [ -x "$c" ] && { printf '%s' "$c"; return 0; }
+  done
+  return 1
+}
+
+# Epoch seconds of the most recent real Claude Code activity, by looking at
+# transcript mtimes. GNU find has -printf; BSD/macOS find does not.
+newest_activity_epoch() {
+  local dir="$CLAUDE_HOME/projects" newest=""
+  [ -d "$dir" ] || return 1
+  if find "$dir" -maxdepth 0 -printf '' >/dev/null 2>&1; then
+    newest=$(find "$dir" -type f -name '*.jsonl' -printf '%T@\n' 2>/dev/null |
+      sort -rn | head -1)
+    newest="${newest%%.*}"
+  else
+    newest=$(find "$dir" -type f -name '*.jsonl' -exec stat -f '%m' {} + 2>/dev/null |
+      sort -rn | head -1)
+  fi
+  [ -n "$newest" ] || return 1
+  printf '%s' "$newest"
+}
+
+# Prints the age in seconds of the current window, or fails if none is open.
+window_age() {
+  local last now age
+  last=$(newest_activity_epoch) || return 1
+  now=$(date +%s)
+  age=$((now - last))
+  [ "$age" -lt $((WINDOW_HOURS * 3600)) ] || return 1
+  printf '%s' "$age"
+}
+
+# --restricted drops the code-running tools AND ignores user/project/local
+# settings, so none of the user's hooks fire on a ping.
+# --strict-mcp-config with no --mcp-config means: load no MCP servers at all.
+build_cmd() {
+  local bin=$1
+  PING_CMD=(
+    "$bin" -p "$PROMPT"
+    --model "$MODEL"
+    --restricted
+    --strict-mcp-config
+    --no-session-persistence
+    --disable-slash-commands
+    --max-budget-usd "$MAX_BUDGET_USD"
+    --output-format text
+  )
+  if [ "$PING_TIMEOUT" -gt 0 ] && command -v timeout >/dev/null 2>&1; then
+    PING_CMD=(timeout "$PING_TIMEOUT" "${PING_CMD[@]}")
+  fi
+}
+
+# ---- subcommands ------------------------------------------------------------
+
+cmd_ping() {
+  local dry=${1:-0} bin age
+  bin=$(find_claude) || {
+    log "ERROR: claude binary not found; set CLAUDE_BIN in $CONFIG_FILE"
+    die "claude binary not found; set CLAUDE_BIN in $CONFIG_FILE"
+  }
+
+  if [ "$SKIP_IF_ACTIVE" -eq 1 ] && age=$(window_age); then
+    local msg="skip: window already open (last activity $(fmt_dur "$age") ago)"
+    if [ "$dry" -eq 1 ]; then
+      printf '%s\n' "$msg"
+      return 0
+    fi
+    log "$msg"
+    rotate_log
+    return 0
+  fi
+
+  build_cmd "$bin"
+
+  if [ "$dry" -eq 1 ]; then
+    printf 'would run:\n  '
+    printf '%q ' "${PING_CMD[@]}"
+    printf '\n'
+    return 0
+  fi
+
+  # Never let two pings overlap: a hung ping must not stack up behind a timer.
+  if command -v flock >/dev/null 2>&1; then
+    exec 9>"$LOCK_FILE"
+    flock -n 9 || { log "skip: another ping is running"; return 0; }
+  fi
+
+  local out rc=0
+  out=$("${PING_CMD[@]}" 2>&1) || rc=$?
+  if [ "$rc" -eq 0 ]; then
+    log "ping ok (model=$MODEL)"
+  else
+    log "ping FAILED rc=$rc: $(printf '%s' "$out" | tr '\n' ' ' | cut -c1-200)"
+  fi
+  rotate_log
+  return "$rc"
+}
+
+cmd_status() {
+  local bin age backend="unknown"
+  printf '%s %s\n\n' "$PROGRAM" "$VERSION"
+
+  if bin=$(find_claude); then
+    printf 'claude binary : %s\n' "$bin"
+  else
+    printf 'claude binary : NOT FOUND\n'
+  fi
+  printf 'config        : %s%s\n' "$CONFIG_FILE" \
+    "$([ -r "$CONFIG_FILE" ] || printf ' (missing, using defaults)')"
+  printf 'model         : %s\n' "$MODEL"
+  printf 'skip-if-active: %s\n' "$([ "$SKIP_IF_ACTIVE" -eq 1 ] && echo yes || echo no)"
+
+  if age=$(window_age); then
+    printf 'window        : OPEN (last activity %s ago, closes in %s)\n' \
+      "$(fmt_dur "$age")" "$(fmt_dur $((WINDOW_HOURS * 3600 - age)))"
+  else
+    printf 'window        : closed (next ping will open one)\n'
+  fi
+
+  [ -r "$MANIFEST" ] && backend=$(awk '$1=="backend"{print $2}' "$MANIFEST")
+  printf 'backend       : %s\n' "$backend"
+
+  case "$backend" in
+    systemd)
+      printf '\n'
+      systemctl --user list-timers "$PROGRAM.timer" --no-pager 2>/dev/null || true
+      ;;
+    cron)
+      printf '\ncrontab entry :\n'
+      crontab -l 2>/dev/null | grep "$PROGRAM" || printf '  (none)\n'
+      ;;
+    launchd)
+      printf '\n'
+      launchctl list 2>/dev/null | grep "$PROGRAM" || printf '  (not loaded)\n'
+      ;;
+  esac
+
+  if [ -r "$LOG_FILE" ]; then
+    printf '\nlast log lines:\n'
+    tail -n 5 "$LOG_FILE" | sed 's/^/  /'
+  fi
+}
+
+cmd_logs() { [ -r "$LOG_FILE" ] && tail -n "${1:-50}" "$LOG_FILE" || printf 'no log yet\n'; }
+
+usage() {
+  cat <<EOF
+$PROGRAM $VERSION — keep a Claude usage window open on a schedule.
+
+usage: $PROGRAM <command>
+
+commands:
+  ping        Open a window now, unless one is already open (run by the timer)
+  test        Dry run: print exactly what ping would do, without doing it
+  status      Show binary, config, window state, schedule and recent log
+  logs [n]    Show the last n log lines (default 50)
+  version     Print version
+
+config: $CONFIG_FILE
+log:    $LOG_FILE
+EOF
+}
+
+case "${1:-}" in
+  ping)    cmd_ping 0 ;;
+  test)    cmd_ping 1 ;;
+  status)  cmd_status ;;
+  logs)    cmd_logs "${2:-50}" ;;
+  version) printf '%s %s\n' "$PROGRAM" "$VERSION" ;;
+  -h | --help | help | "") usage ;;
+  *) die "unknown command: $1 (try --help)" ;;
+esac

@@ -1,0 +1,29 @@
+# claude-keepalive configuration.
+# Copy to ~/.config/claude-keepalive/config and edit. Shell syntax.
+
+# Path to the claude CLI. Leave empty to auto-discover.
+#CLAUDE_BIN=""
+
+# Model used for the ping. The usage window is shared across models, so use the
+# cheapest one available.
+#MODEL="claude-haiku-4-5-20251001"
+
+# The prompt sent. Keep it trivial — you are paying for every token.
+#PROMPT="ok"
+
+# 1 = skip the ping when a window is already open (recommended: avoids burning
+# quota when you were working 20 minutes ago).
+# 0 = always ping on schedule.
+#SKIP_IF_ACTIVE=1
+
+# Length of a Claude usage window, in hours.
+#WINDOW_HOURS=5
+
+# Hard spend ceiling per ping, passed to --max-budget-usd.
+#MAX_BUDGET_USD="0.05"
+
+# Kill the ping after this many seconds. 0 disables the timeout.
+#PING_TIMEOUT=120
+
+# Lines kept in ~/.local/state/claude-keepalive/log.
+#LOG_MAX_LINES=500

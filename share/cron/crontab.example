@@ -1,0 +1,6 @@
+# claude-keepalive — fallback backend for systems without systemd or launchd.
+# Installed automatically by `./install.sh --backend cron`.
+#
+# Adjust the hours to your own day. The script skips the ping by itself when a
+# usage window is already open, so an extra entry costs nothing.
+0 6,11,16,21 * * * $HOME/.local/bin/claude-keepalive ping
