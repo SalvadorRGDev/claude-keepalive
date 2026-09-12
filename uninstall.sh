@@ -101,7 +101,7 @@ while IFS=$'\t' read -r kind value; do
         say "already gone: $value"
       fi
       ;;
-    config)
+    config | config-kept)
       if [ "$PURGE" -eq 1 ]; then
         [ -e "$value" ] && { run rm -f "$value"; say "purged $value"; }
       else
@@ -159,7 +159,9 @@ else
     say "purged $STATE_DIR"
   else
     say "removed manifest; kept log at $STATE_DIR/log (use --purge to delete)"
-    rmdir "$STATE_DIR" 2>/dev/null && say "removed empty $STATE_DIR" || true
+    if rmdir "$STATE_DIR" 2>/dev/null; then
+      say "removed empty $STATE_DIR"
+    fi
   fi
 fi
 

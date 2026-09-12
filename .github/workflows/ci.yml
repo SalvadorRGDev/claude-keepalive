@@ -10,29 +10,37 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Run shellcheck
+      - run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: shellcheck bin/claude-keepalive install.sh uninstall.sh lib/backend.sh
+
+  syntax:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n every script
         run: |
-          sudo apt-get update && sudo apt-get install -y shellcheck
-          shellcheck bin/claude-keepalive install.sh uninstall.sh
+          for f in bin/claude-keepalive install.sh uninstall.sh lib/backend.sh; do
+            bash -n "$f"
+          done
+
+  units:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Generated systemd units must be valid
+        run: |
+          # shellcheck disable=SC1091
+          . lib/backend.sh
+          mkdir -p /tmp/u
+          bk_systemd_service /usr/bin/claude-keepalive > /tmp/u/claude-keepalive.service
+          bk_systemd_timer  "6,11,16,21"              > /tmp/u/claude-keepalive.timer
+          systemd-analyze verify /tmp/u/claude-keepalive.timer
+          systemd-analyze calendar "*-*-* $(hours_pad 6,11,16,21):00:00"
+        shell: bash
 
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install bats
-        run: sudo apt-get update && sudo apt-get install -y bats
-      - name: Run tests
-        run: bats tests/
-
-  templates:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Every placeholder must be substituted by install.sh
-        run: |
-          for f in share/systemd/*.in share/launchd/*.in; do
-            grep -oE '@[A-Z_]+@' "$f" | sort -u | while read -r ph; do
-              grep -q -- "$ph" install.sh || {
-                echo "placeholder $ph in $f is never substituted"; exit 1; }
-            done
-          done
+      - run: sudo apt-get update && sudo apt-get install -y bats
+      - run: bats tests/

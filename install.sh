@@ -4,7 +4,7 @@
 #
 # Every path created and every system flag flipped is recorded in an install
 # manifest. uninstall.sh reverts exactly that list and nothing else — it never
-# deletes a shared directory by pattern.
+# removes a shared directory by pattern.
 
 set -euo pipefail
 
@@ -17,11 +17,10 @@ SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_DIR="$XDG_CONFIG_HOME/$PROGRAM"
 STATE_DIR="$XDG_STATE_HOME/$PROGRAM"
 MANIFEST="$STATE_DIR/install-manifest"
-UNIT_DIR="$XDG_CONFIG_HOME/systemd/user"
-AGENT_DIR="$HOME/Library/LaunchAgents"
 
 PREFIX="$HOME/.local"
 HOURS="6,11,16,21"
+WINDOW_HOURS=5
 BACKEND="auto"
 DRY_RUN=0
 ENABLE_LINGER=0
@@ -30,20 +29,23 @@ usage() {
   cat <<EOF
 usage: ./install.sh [options]
 
-  --hours "6,11,16,21"   Hours of day to ping (default: 6,11,16,21)
+  --hours "6,11,16,21"   Hours of day to ping (default: 6,11,16,21).
+                         Keep them WINDOW_HOURS apart so windows stay anchored.
+                         Afterwards use \`$PROGRAM schedule <hours>\` — no
+                         reinstall needed to change them.
   --backend BACKEND      auto | systemd | launchd | cron (default: auto)
-  --prefix DIR           Install root for the script (default: ~/.local)
+  --prefix DIR           Install root (default: ~/.local)
   --enable-linger        Linux: keep the timer running with no session open.
-                         Needs sudo/polkit. Off by default; without it the
-                         timer only runs while you are logged in.
-  --dry-run              Print every action without performing any of it
+                         Needs sudo/polkit. Off by default; without it the timer
+                         only fires while you are logged in.
+  --dry-run              Print every action, perform none
   -h, --help             This help
 EOF
 }
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --hours) HOURS="$2"; shift 2 ;;
+    --hours | --hour) HOURS="$2"; shift 2 ;;
     --backend) BACKEND="$2"; shift 2 ;;
     --prefix) PREFIX="$2"; shift 2 ;;
     --enable-linger) ENABLE_LINGER=1; shift ;;
@@ -54,12 +56,19 @@ while [ $# -gt 0 ]; do
 done
 
 BIN_DEST="$PREFIX/bin/$PROGRAM"
+LIB_DEST="$PREFIX/lib/$PROGRAM/backend.sh"
 
-say()  { printf '  %s\n' "$*"; }
+# shellcheck source=lib/backend.sh
+. "$SRC_DIR/lib/backend.sh"
+
+say() { printf '  %s\n' "$*"; }
 note() { printf '\n%s\n' "$*"; }
 
-# Execute, or just describe, depending on --dry-run.
-run() {
+# ---- backend-library hooks: make it dry-run aware and manifest-aware ---------
+
+bk_say() { say "$@"; }
+
+bk_run() {
   if [ "$DRY_RUN" -eq 1 ]; then
     printf '  would: %s\n' "$*"
   else
@@ -67,82 +76,39 @@ run() {
   fi
 }
 
-# Append one reversible action to the manifest.
+bk_write() {
+  if [ "$DRY_RUN" -eq 1 ]; then
+    printf '  would write: %s\n' "$1"
+  else
+    mkdir -p "$(dirname "$1")"
+    printf '%s\n' "$2" >"$1"
+  fi
+}
+
+bk_record() { record "$1" "$2"; }
+
 record() {
   [ "$DRY_RUN" -eq 1 ] && return 0
   mkdir -p "$STATE_DIR"
   printf '%s\t%s\n' "$1" "$2" >>"$MANIFEST"
 }
 
-detect_backend() {
-  case "$(uname -s)" in
-    Darwin) printf 'launchd' ;;
-    Linux)
-      if command -v systemctl >/dev/null 2>&1 &&
-        systemctl --user show-environment >/dev/null 2>&1; then
-        printf 'systemd'
-      elif command -v crontab >/dev/null 2>&1; then
-        printf 'cron'
-      else
-        printf 'none'
-      fi
-      ;;
-    *) command -v crontab >/dev/null 2>&1 && printf 'cron' || printf 'none' ;;
-  esac
-}
-
-# "6,11" -> "06,11" (systemd OnCalendar wants zero-padded hours)
-pad_hours() {
-  local out="" h arr
-  IFS=',' read -ra arr <<<"$1"
-  for h in "${arr[@]}"; do
-    h="${h// /}"
-    printf -v h '%02d' "$((10#$h))"
-    out="${out:+$out,}$h"
-  done
-  printf '%s' "$out"
-}
-
-launchd_entries() {
-  local h arr
-  IFS=',' read -ra arr <<<"$1"
-  for h in "${arr[@]}"; do
-    h="${h// /}"
-    printf '    <dict><key>Hour</key><integer>%d</integer>' "$((10#$h))"
-    printf '<key>Minute</key><integer>0</integer></dict>\n'
-  done
-}
-
-# Render a template to a destination and record it.
-render() {
-  local src=$1 dest=$2
-  shift 2
-  local content
-  content=$(cat "$src")
-  while [ $# -gt 0 ]; do
-    content="${content//$1/$2}"
-    shift 2
-  done
-  if [ "$DRY_RUN" -eq 1 ]; then
-    printf '  would write: %s\n' "$dest"
-  else
-    mkdir -p "$(dirname "$dest")"
-    printf '%s\n' "$content" >"$dest"
-    record file "$dest"
-  fi
-}
-
 # ---- preflight --------------------------------------------------------------
 
 printf '%s installer\n\n' "$PROGRAM"
 
-[ "$BACKEND" = "auto" ] && BACKEND=$(detect_backend)
-[ "$BACKEND" = "none" ] &&
-  { printf 'error: no scheduler found (systemd, launchd or cron)\n' >&2; exit 1; }
+HOURS=$(hours_normalize "$HOURS") || { printf 'error: bad --hours\n' >&2; exit 1; }
+
+[ "$BACKEND" = "auto" ] && BACKEND=$(backend_detect)
+if [ "$BACKEND" = "none" ]; then
+  printf 'error: no scheduler found (systemd, launchd or cron)\n' >&2
+  exit 1
+fi
 
 if [ -e "$MANIFEST" ] && [ "$DRY_RUN" -eq 0 ]; then
   printf 'error: already installed (manifest at %s)\n' "$MANIFEST" >&2
-  printf 'run ./uninstall.sh first, then install again.\n' >&2
+  printf 'to change the hours:  %s schedule <hours>\n' "$PROGRAM" >&2
+  printf 'to reinstall:         ./uninstall.sh && ./install.sh\n' >&2
   exit 1
 fi
 
@@ -154,87 +120,66 @@ fi
 say "backend : $BACKEND"
 say "hours   : $HOURS"
 say "script  : $BIN_DEST"
+hours_check_spacing "$HOURS" "$WINDOW_HOURS" || true
 [ "$DRY_RUN" -eq 1 ] && note "DRY RUN — nothing below is actually performed."
 
-# ---- 1. the script ----------------------------------------------------------
+# ---- 1. script and library --------------------------------------------------
 
 note "1. installing the script"
-run mkdir -p "$PREFIX/bin"
+bk_run mkdir -p "$PREFIX/bin" "$PREFIX/lib/$PROGRAM"
 if [ "$DRY_RUN" -eq 1 ]; then
-  printf '  would: install -m 0755 %s/bin/%s %s\n' "$SRC_DIR" "$PROGRAM" "$BIN_DEST"
+  printf '  would: install -m 0755 %s -> %s\n' "bin/$PROGRAM" "$BIN_DEST"
+  printf '  would: install -m 0644 %s -> %s\n' "lib/backend.sh" "$LIB_DEST"
 else
   install -m 0755 "$SRC_DIR/bin/$PROGRAM" "$BIN_DEST"
   record file "$BIN_DEST"
+  install -m 0644 "$SRC_DIR/lib/backend.sh" "$LIB_DEST"
+  record file "$LIB_DEST"
+  record dir "$PREFIX/lib/$PROGRAM"
   record backend "$BACKEND"
+  say "installed $BIN_DEST"
+  say "installed $LIB_DEST"
 fi
 
 # ---- 2. config --------------------------------------------------------------
 
-note "2. installing default config"
+note "2. installing config"
 if [ -e "$CONFIG_DIR/config" ]; then
-  # We did not create it, so it is not ours to delete on a plain uninstall —
-  # but --purge means "remove my config", so record that it exists.
+  # Not ours to delete on a plain uninstall, but --purge means "remove my
+  # config", so record that it is there.
   record config-kept "$CONFIG_DIR/config"
   say "kept existing $CONFIG_DIR/config"
+  say "run '$PROGRAM schedule $HOURS' if its HOURS differ"
 elif [ "$DRY_RUN" -eq 1 ]; then
-  printf '  would write: %s/config\n' "$CONFIG_DIR"
+  printf '  would write: %s/config (HOURS="%s")\n' "$CONFIG_DIR" "$HOURS"
 else
   mkdir -p "$CONFIG_DIR"
-  cp "$SRC_DIR/config/config.example" "$CONFIG_DIR/config"
+  sed -E "s|^HOURS=.*|HOURS=\"$HOURS\"|" "$SRC_DIR/config/config.example" \
+    >"$CONFIG_DIR/config"
   record config "$CONFIG_DIR/config"
   record dir "$CONFIG_DIR"
   say "wrote $CONFIG_DIR/config"
 fi
 
-# ---- 3. scheduler -----------------------------------------------------------
+# ---- 3. schedule ------------------------------------------------------------
 
 note "3. registering the schedule"
-case "$BACKEND" in
-  systemd)
-    render "$SRC_DIR/share/systemd/$PROGRAM.service.in" "$UNIT_DIR/$PROGRAM.service" \
-      "@BIN@" "$BIN_DEST"
-    render "$SRC_DIR/share/systemd/$PROGRAM.timer.in" "$UNIT_DIR/$PROGRAM.timer" \
-      "@ONCALENDAR@" "*-*-* $(pad_hours "$HOURS"):00:00"
-    run systemctl --user daemon-reload
-    run systemctl --user enable --now "$PROGRAM.timer"
-    record unit "$PROGRAM.timer"
-    say "enabled $PROGRAM.timer"
+backend_apply "$BACKEND" "$BIN_DEST" "$HOURS"
 
-    if [ "$ENABLE_LINGER" -eq 1 ]; then
-      if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null)" = "yes" ]; then
-        say "linger already enabled — leaving it alone"
-      else
-        run loginctl enable-linger "$USER"
-        record linger "enabled-by-us"
-        say "enabled linger (uninstall will turn it back off)"
-      fi
+if [ "$BACKEND" = "systemd" ]; then
+  if [ "$ENABLE_LINGER" -eq 1 ]; then
+    if [ "$(loginctl show-user "$USER" -p Linger --value 2>/dev/null || true)" = "yes" ]; then
+      say "linger already enabled — leaving it alone"
     else
-      say "linger NOT enabled — pass --enable-linger to run without a session"
+      bk_run loginctl enable-linger "$USER"
+      record linger "enabled-by-us"
+      say "enabled linger (uninstall will turn it back off)"
     fi
-    ;;
-
-  launchd)
-    render "$SRC_DIR/share/launchd/$PROGRAM.plist.in" "$AGENT_DIR/$PROGRAM.plist" \
-      "@BIN@" "$BIN_DEST" \
-      "@CALENDAR_ENTRIES@" "$(launchd_entries "$HOURS")"
-    run launchctl unload "$AGENT_DIR/$PROGRAM.plist" 2>/dev/null || true
-    run launchctl load "$AGENT_DIR/$PROGRAM.plist"
-    record agent "$AGENT_DIR/$PROGRAM.plist"
-    say "loaded $PROGRAM.plist"
-    ;;
-
-  cron)
-    line="0 $HOURS * * * $BIN_DEST ping"
-    if [ "$DRY_RUN" -eq 1 ]; then
-      printf '  would add crontab line: %s\n' "$line"
-    else
-      (crontab -l 2>/dev/null | grep -vF "$BIN_DEST" || true; printf '%s\n' "$line") |
-        crontab -
-      record cron "$BIN_DEST"
-      say "added crontab line"
-    fi
-    ;;
-esac
+  else
+    say "linger NOT enabled — pings only fire while you are logged in"
+    say "re-run with --enable-linger to change that"
+  fi
+fi
 
 # ---- done -------------------------------------------------------------------
 
@@ -243,18 +188,19 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-record version "1.0.0"
+record version "1.1.0"
 record installed "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 note "installed."
 cat <<EOF
 
-  $PROGRAM status     see the window state and next scheduled run
-  $PROGRAM test       dry-run a ping without sending one
-  ./uninstall.sh      revert everything in the manifest
+  $PROGRAM status            window state and next scheduled run
+  $PROGRAM test              dry-run a ping without sending one
+  $PROGRAM schedule 7,12,17,22   change the hours, no reinstall
+  ./uninstall.sh             revert everything in the manifest
 
   manifest: $MANIFEST
 
-Reminder: this does not grant extra quota. It only fixes your window
-boundaries to predictable hours. See README.md.
+Reminder: this grants no extra quota. It anchors your window boundaries to
+fixed hours so you always know when the next reset lands. See README.md.
 EOF

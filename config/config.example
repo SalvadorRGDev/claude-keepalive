@@ -1,20 +1,35 @@
-# claude-keepalive configuration.
-# Copy to ~/.config/claude-keepalive/config and edit. Shell syntax.
+# claude-keepalive configuration. Shell syntax.
+# Installed to ~/.config/claude-keepalive/config
+
+# ---- the two you will actually tune ----------------------------------------
+
+# Hours of the day to ping. Keep them exactly WINDOW_HOURS apart so each ping
+# lands when the previous window expires and your resets never drift.
+# Change these with `claude-keepalive schedule 7,12,17,22` rather than by hand —
+# editing this line alone does not update the systemd timer / crontab.
+HOURS="6,11,16,21"
+
+# 0 = ping unconditionally on schedule (default, keeps windows anchored).
+# 1 = skip the ping when you were active recently.
+#
+# Leave this at 0 unless you know you want the trade. Skipping a ping breaks the
+# chain: the next window then starts whenever you happen to send a message
+# instead of on the hour, and every reset after it drifts. A half-elapsed window
+# is not half an allowance — you can spend all of it in the time that remains
+# and still get a fresh window at the next boundary.
+SKIP_IF_ACTIVE=0
+
+# ---- rarely changed --------------------------------------------------------
 
 # Path to the claude CLI. Leave empty to auto-discover.
 #CLAUDE_BIN=""
 
-# Model used for the ping. The usage window is shared across models, so use the
-# cheapest one available.
+# Model used for the ping. The usage window is shared across models, so there is
+# no reason to open one with anything but the cheapest.
 #MODEL="claude-haiku-4-5-20251001"
 
-# The prompt sent. Keep it trivial — you are paying for every token.
+# The prompt sent. Keep it trivial — you pay for every token.
 #PROMPT="ok"
-
-# 1 = skip the ping when a window is already open (recommended: avoids burning
-# quota when you were working 20 minutes ago).
-# 0 = always ping on schedule.
-#SKIP_IF_ACTIVE=1
 
 # Length of a Claude usage window, in hours.
 #WINDOW_HOURS=5
