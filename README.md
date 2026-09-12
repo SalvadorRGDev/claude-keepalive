@@ -1,70 +1,150 @@
 # claude-keepalive
 
-Anchors your Claude usage windows to fixed hours, so you always know when the
-next reset lands.
+You decide the hours at which a Claude usage window opens — so you decide when
+your resets land, and you plan your working day around them instead of guessing.
 
 ```
 claude-keepalive status
 ```
 ```
-claude-keepalive 1.1.0
+claude-keepalive 2.0.0
 
 claude binary : /usr/bin/claude
 config        : ~/.config/claude-keepalive/config
 model         : claude-haiku-4-5-20251001
 hours         : 6,11,16,21
-skip-if-active: no (pings unconditionally, keeps windows anchored)
-window        : OPEN (last activity 0h42m ago, closes in 4h18m)
+next ping     : 16:00 (in 2h13m)
+last activity : 0h42m ago — a window is open
 backend       : systemd
 ```
 
 ## What it does, and what it does not
 
 **It grants no extra quota.** A Claude usage window starts with your first
-message and runs for five hours. Pinging on a schedule does not extend a window
-or raise its allowance, and the weekly cap above it still applies.
+message and runs for five hours; the weekly cap above it still applies. Pinging
+on a schedule does not extend a window or raise its allowance.
 
-What it does is make your resets **predictable**. That matters more than it
-sounds, because of how running out actually plays out: if you burn a window's
-allowance in two hours, you wait for that window to close before you can send
-anything again. Whether that wait ends at a time you know in advance, or at
-whatever o'clock your first message happened to land, is the difference between
-planning your day around it and being surprised by it.
+What it gives you is **control over when windows start**. That matters because of
+how running out actually plays out: when you exhaust a window's allowance, you
+wait for that window to close before you can send anything again. Whether that
+wait ends at a time you chose in advance, or at whatever o'clock your first
+message happened to land, is the difference between planning around it and being
+ambushed by it.
 
-### Why the hours are five apart
+## The one rule that explains everything
 
-Pings spaced exactly `WINDOW_HOURS` apart form a chain: each ping fires at the
-instant the window opened by the previous ping expires, so it opens the next one
-immediately. Nothing drifts. With `6,11,16,21` your resets land at 11:00, 16:00
-and 21:00, every day, whatever you did in between.
+**A ping can only ever *open* a window. It can never close one early, and it can
+never move a boundary.**
 
-Break the spacing and you break the chain. `install.sh` and
-`claude-keepalive schedule` both warn when consecutive hours are not
-`WINDOW_HOURS` apart. An overnight gap (21:00 → 06:00) is fine and expected; a
-daytime one is not.
+Everything else follows from that:
 
-### Why `SKIP_IF_ACTIVE` defaults to 0
+| Spacing between two hours | What happens |
+|---|---|
+| **exactly 5 h** | The second ping fires at the instant the first window expires, so it opens the next one immediately. Every boundary is pinned; nothing drifts. |
+| **more than 5 h** | The window from the first ping expires before the second arrives. The hours you listed are *guaranteed* window starts; boundaries in between follow your own activity. A deliberate, useful schedule. |
+| **less than 5 h** | The second ping lands inside a window that is already open, so it opens nothing. A wasted request. `install.sh` and `schedule` both warn about this one. |
 
-The tool can detect that a window is already open — it reads the mtimes of your
-transcripts in `~/.claude/projects` — and skip the ping to save a few tokens.
-That is **off by default**, and the reasoning is worth spelling out because it is
-easy to get backwards.
+A useful consequence: placing a ping *before* you sit down deliberately spends
+part of the window's clock while you are away, so your **first reset arrives
+earlier in your working day**. If you tend to burn an allowance in two or three
+hours, an earlier reset is worth more to you than a later one.
 
-Skipping looks like free savings. It is not: a skipped ping is a broken link in
-the chain. The next window then opens whenever you happen to send a message
-rather than on the hour, and every reset after it inherits the drift.
+## Choosing your hours
 
-The intuition that makes skipping look attractive — "a window that is already
-half elapsed is worth less" — is false. The allowance is per window, not per
-hour. You can spend all of a window's allowance in the thirty minutes it has
-left, and still get a fresh window at the next boundary. A partly elapsed window
-is not a partial allowance.
+There is no single right schedule. Pick the hours where you want a window
+guaranteed to exist, then read the resets off the clock.
 
-So the default is to ping unconditionally. Set `SKIP_IF_ACTIVE=1` only if you
-would genuinely rather save four trivial Haiku pings a day than keep your reset
-times predictable. The window detection still powers `status` either way.
+### Continuous coverage — `6,11,16,21`
 
-### The honest caveat
+Five hours apart, so every boundary is pinned. A window is always open from
+06:00 until 02:00 the next morning.
+
+```
+06:00   ping  →  window opens, expires 11:00
+11:00   ping  →  fires exactly as that one expires; window to 16:00
+16:00   ping  →  window to 21:00
+21:00   ping  →  window to 02:00
+```
+
+Your resets land at **11:00, 16:00, 21:00 and 02:00**, every single day,
+regardless of what you did in between. Pick this if you work unpredictable hours
+and just want the boundaries to stop moving.
+
+### Three work blocks — `6,14,22`
+
+Not five hours apart, and that is the point. Say you start work at 08:00:
+
+```
+06:00   ping  →  window opens, expires 11:00
+08:00   you start working — 3 h of that window left
+11:00   reset. If you keep going, your own next message opens the following one
+14:00   ping  →  guarantees a window for your afternoon block
+22:00   ping  →  guarantees one for your night block
+```
+
+By putting the ping two hours before you sit down, the window's clock is already
+running when you arrive, so your first reset lands at **11:00 instead of 13:00**.
+You only have to work three hours to reach it rather than five. If you burn
+through an allowance quickly, that is exactly the trade you want.
+
+### Two blocks with a real break — `6,18`
+
+Mornings 08:00–13:00, evenings from 20:00, nothing in between:
+
+```
+06:00   ping  →  window opens, expires 11:00
+08:00   you start
+11:00   reset; your next message carries you through to 13:00
+13:00   you stop — and nothing is scheduled here, so no ping is spent
+        while you are away from the keyboard
+18:00   ping  →  window opens, expires 23:00
+20:00   you start — 3 h left, reset at 23:00
+```
+
+There is no ping at 13:00 precisely *because* you are not working then. You spend
+pings only where they buy you something, and both of your working blocks begin
+inside a window whose reset time you already know.
+
+### The point
+
+The schedule is a list of statements: *"guarantee me a window at this hour."*
+Line those hours up with the starts of your working blocks and you get absolute
+control over when Claude's windows open — and therefore over when your resets
+arrive. The tool warns you only about pings that cannot possibly do anything
+(closer together than a window); every wider spacing is a legitimate choice about
+the shape of your day.
+
+Change your mind at any time:
+
+```sh
+claude-keepalive schedule 6,11,16,21   # continuous
+claude-keepalive schedule 6,14,22      # three blocks
+claude-keepalive schedule 6,18         # two blocks
+```
+
+## Why pings are unconditional
+
+Version 1.x had a `SKIP_IF_ACTIVE` option that skipped the ping when you had
+been active recently, on the theory that it saved a pointless request. It was
+removed in 2.0.0, and the reason is worth stating because it is not a matter of
+taste.
+
+Such a check can only ask *"was there activity in the last five hours?"* That is
+not the same question as *"is a window open?"*, and it answers wrongly at exactly
+the moment a ping matters. If a window opened at `T` and your last message was at
+`A` (with `T < A < T+5`), then at `T+5` — when the window expires and the ping is
+due — the age of that activity is `T+5−A`, which is **less than five hours**. The
+check says "skip" at every single boundary.
+
+Getting it right would require knowing when the window *started*, which local
+data does not reliably give us. A heuristic that cannot be made correct with the
+information available should not exist, so it does not. Pings always fire.
+
+What the window detection is still good for is reporting: `status` tells you when
+you were last active and whether a window is open. It does not claim to know when
+that window closes, because from mtimes alone it cannot.
+
+## The honest caveat
 
 Automating requests to manage usage limits sits in a gray area of Anthropic's
 usage policy. This tool is deliberately minimal — one trivial prompt on the
@@ -94,8 +174,8 @@ macOS, cron as a fallback.
 ### About `--enable-linger`
 
 A systemd **user** timer only fires while you have a session. If your machine is
-on but you are not logged in at 06:00, the ping that matters most — the one after
-the overnight gap — never happens.
+on but you are not logged in at 06:00, the ping that matters most — the one that
+opens your first window of the day — never happens.
 
 Lingering fixes that, at the cost of a root-owned file under
 `/var/lib/systemd/linger/`. It is opt-in because it is the only step needing
@@ -107,10 +187,10 @@ yourself.
 ## Usage
 
 ```sh
-claude-keepalive status              # window state, schedule, recent log
+claude-keepalive status              # next ping, window state, recent log
 claude-keepalive test                # print the exact ping command, send nothing
 claude-keepalive schedule            # show the active schedule
-claude-keepalive schedule 7,12,17,22 # change the hours in place, no reinstall
+claude-keepalive schedule 6,18       # change the hours in place, no reinstall
 claude-keepalive logs 20             # recent log lines
 claude-keepalive ping                # what the timer calls
 ```
@@ -120,13 +200,13 @@ claude-keepalive ping                # what the timer calls
 ### Changing the hours
 
 ```sh
-claude-keepalive schedule 7,12,17,22
-claude-keepalive schedule --hours "7,12,17,22"    # same thing
+claude-keepalive schedule 6,14,22
+claude-keepalive schedule --hours "6,14,22"    # same thing
 ```
 
-This rewrites the systemd timer (or crontab entry, or launchd plist), reloads
-the scheduler, and updates `HOURS` in your config so everything stays in sync.
-No reinstall, no editing unit files by hand.
+This rewrites the systemd timer (or crontab entry, or launchd plist), reloads the
+scheduler, and updates `HOURS` in your config so everything stays in sync. No
+reinstall, no editing unit files by hand.
 
 Hours may be given in any order and are sorted for you. Out-of-range or
 non-numeric values are rejected before anything is written.
@@ -167,7 +247,6 @@ Every flag earns its place:
 | Option | Default | |
 |---|---|---|
 | `HOURS` | `6,11,16,21` | Change with `schedule`, not by hand |
-| `SKIP_IF_ACTIVE` | `0` | See above before setting to 1 |
 | `WINDOW_HOURS` | `5` | Length of a usage window |
 | `MODEL` | `claude-haiku-4-5-20251001` | |
 | `PROMPT` | `ok` | |
@@ -218,7 +297,7 @@ lib/backend.sh           scheduler logic, shared by install.sh and `schedule`
 install.sh               manifest-writing installer
 uninstall.sh             manifest-reading uninstaller
 config/config.example    documented defaults
-tests/test.bats          23 tests
+tests/test.bats          28 tests
 ```
 
 `lib/backend.sh` is the single source of truth for unit and crontab content, so

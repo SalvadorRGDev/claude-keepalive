@@ -54,40 +54,20 @@ recent_activity() {
 
 # ---- window detection -------------------------------------------------------
 
-@test "window is closed with no transcripts" {
+@test "no transcripts means no activity to report" {
   run "$BIN" status
   [ "$status" -eq 0 ]
-  [[ "$output" == *"closed"* ]]
+  [[ "$output" == *"last activity : none found"* ]]
 }
 
-@test "window is open after recent activity" {
-  recent_activity
+@test "activity older than a window reports no window open" {
+  mkdir -p "$TMP/.claude/projects/demo"
+  touch -d "6 hours ago" "$TMP/.claude/projects/demo/s.jsonl"
   run "$BIN" status
-  [[ "$output" == *"OPEN"* ]]
+  [[ "$output" == *"no window open"* ]]
 }
 
 # ---- the default must NOT skip ----------------------------------------------
-
-@test "default pings even when a window is open (anchoring beats saving)" {
-  recent_activity
-  run "$BIN" test
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"would run:"* ]]
-  [[ "$output" != *"skip"* ]]
-}
-
-@test "status reports skip-if-active off by default" {
-  run "$BIN" status
-  [[ "$output" == *"skip-if-active: no"* ]]
-}
-
-@test "SKIP_IF_ACTIVE=1 opts back into skipping" {
-  recent_activity
-  echo 'SKIP_IF_ACTIVE=1' >>"$XDG_CONFIG_HOME/claude-keepalive/config"
-  run "$BIN" test
-  [ "$status" -eq 0 ]
-  [[ "$output" == *"skip"* ]]
-}
 
 @test "test never actually runs claude" {
   run "$BIN" test
@@ -117,17 +97,28 @@ recent_activity() {
   [ "$status" -ne 0 ]
 }
 
-@test "even 5h spacing passes the anchoring check" {
+@test "exact 5h spacing is silently fine" {
   . "$REPO/lib/backend.sh"
-  run hours_check_spacing "6,11,16,21" 5
+  run hours_advise "6,11,16,21" 5
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "gaps wider than a window are accepted as a deliberate choice" {
+  . "$REPO/lib/backend.sh"
+  run hours_advise "6,14,22" 5
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"deliberate schedule"* ]]
+
+  run hours_advise "6,18" 5
   [ "$status" -eq 0 ]
 }
 
-@test "uneven spacing warns but does not fail hard" {
+@test "gaps narrower than a window are flagged as wasted pings" {
   . "$REPO/lib/backend.sh"
-  run hours_check_spacing "6,10,14" 5
+  run hours_advise "6,10,14" 5
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not stay anchored"* ]]
+  [[ "$output" == *"opens nothing"* ]]
 }
 
 # ---- generated units --------------------------------------------------------
@@ -180,13 +171,12 @@ recent_activity() {
   [[ "$output" == *"no manifest"* ]]
 }
 
-@test "config example ships the tunables uncommented" {
+@test "config example ships HOURS uncommented" {
   grep -qE '^HOURS=' "$REPO/config/config.example"
-  grep -qE '^SKIP_IF_ACTIVE=0' "$REPO/config/config.example"
 }
 
 @test "config example documents every option" {
-  for key in CLAUDE_BIN MODEL PROMPT SKIP_IF_ACTIVE WINDOW_HOURS HOURS \
+  for key in CLAUDE_BIN MODEL PROMPT WINDOW_HOURS HOURS \
     MAX_BUDGET_USD PING_TIMEOUT LOG_MAX_LINES; do
     grep -q "$key" "$REPO/config/config.example"
   done
@@ -200,4 +190,46 @@ recent_activity() {
 
   run bk_launchd_plist "/bin/true" ""
   [ "$status" -ne 0 ]
+}
+
+@test "pings are unconditional: recent activity does not skip" {
+  recent_activity
+  run "$BIN" test
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"would run:"* ]]
+  [[ "$output" != *"skip"* ]]
+}
+
+@test "status shows the next scheduled ping" {
+  run "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"next ping"* ]]
+}
+
+@test "status no longer claims to know when the window closes" {
+  recent_activity
+  run "$BIN" status
+  [[ "$output" == *"a window is open"* ]]
+  [[ "$output" != *"closes in"* ]]
+}
+
+@test "an obsolete SKIP_IF_ACTIVE in the config is called out, not ignored" {
+  echo 'SKIP_IF_ACTIVE=1' >>"$XDG_CONFIG_HOME/claude-keepalive/config"
+  run "$BIN" status
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"removed in 2.0.0"* ]]
+}
+
+@test "next ping is always in the future and within a day" {
+  . "$REPO/bin/claude-keepalive" version >/dev/null 2>&1 || true
+  run bash -c '. /dev/stdin <<<"$(sed -n "/^next_ping()/,/^}/p" '"$REPO"'/bin/claude-keepalive)"
+    read -r h d <<<"$(next_ping 6,11,16,21)"
+    [ "$d" -gt 0 ] && [ "$d" -le 86400 ] && echo "ok $h $d"'
+  [ "$status" -eq 0 ]
+  [[ "$output" == ok* ]]
+}
+
+@test "config example no longer ships SKIP_IF_ACTIVE as an option" {
+  ! grep -qE '^SKIP_IF_ACTIVE=' "$REPO/config/config.example"
+  ! grep -qE '^#SKIP_IF_ACTIVE=' "$REPO/config/config.example"
 }

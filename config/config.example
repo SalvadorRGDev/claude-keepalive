@@ -1,23 +1,18 @@
 # claude-keepalive configuration. Shell syntax.
 # Installed to ~/.config/claude-keepalive/config
 
-# ---- the two you will actually tune ----------------------------------------
-
-# Hours of the day to ping. Keep them exactly WINDOW_HOURS apart so each ping
-# lands when the previous window expires and your resets never drift.
-# Change these with `claude-keepalive schedule 7,12,17,22` rather than by hand —
-# editing this line alone does not update the systemd timer / crontab.
-HOURS="6,11,16,21"
-
-# 0 = ping unconditionally on schedule (default, keeps windows anchored).
-# 1 = skip the ping when you were active recently.
+# Hours of the day at which to open a Claude usage window.
 #
-# Leave this at 0 unless you know you want the trade. Skipping a ping breaks the
-# chain: the next window then starts whenever you happen to send a message
-# instead of on the hour, and every reset after it drifts. A half-elapsed window
-# is not half an allowance — you can spend all of it in the time that remains
-# and still get a fresh window at the next boundary.
-SKIP_IF_ACTIVE=0
+# A ping only ever OPENS a window — it cannot close one early or move a
+# boundary. So these hours are guaranteed window starts, and picking them is how
+# you decide when your resets land. Spacing them exactly WINDOW_HOURS apart
+# ("6,11,16,21") pins every boundary; spacing them wider ("6,14,22", "6,18")
+# gives you fewer windows placed exactly where your working day needs them.
+# See "Choosing your hours" in the README.
+#
+# Change these with `claude-keepalive schedule 6,18` rather than by hand —
+# editing this line alone does not update the systemd timer or crontab.
+HOURS="6,11,16,21"
 
 # ---- rarely changed --------------------------------------------------------
 
@@ -42,3 +37,8 @@ SKIP_IF_ACTIVE=0
 
 # Lines kept in ~/.local/state/claude-keepalive/log.
 #LOG_MAX_LINES=500
+
+# Note: SKIP_IF_ACTIVE existed in 1.x and was removed in 2.0.0. It could only
+# ask "was there activity in the last WINDOW_HOURS?", which is not the same as
+# "is a window open?" — and it answered wrongly at every boundary, which is the
+# one moment a ping matters. Pings are now always unconditional.

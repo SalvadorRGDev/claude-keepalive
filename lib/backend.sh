@@ -75,11 +75,20 @@ hours_pad() {
   printf '%s' "$out"
 }
 
-# Anchoring only holds when consecutive pings sit exactly WINDOW_HOURS apart:
-# each ping then lands at the instant the previous window expires, so the chain
-# of windows never drifts. Warn — do not refuse — when it does not hold.
-hours_check_spacing() {
-  local hours=$1 window=$2 arr h prev="" gap ok=0
+# Advise on a schedule without refusing it. Three cases, and only one is a
+# mistake:
+#
+#   gap == window   every boundary is pinned; the chain never drifts
+#   gap >  window   fewer, deliberately placed windows. The boundaries inside the
+#                   gap follow your own activity instead of the clock. A valid
+#                   and common choice — see "Choosing your hours" in the README.
+#   gap <  window   the later ping lands inside the window the earlier one opened,
+#                   so it opens nothing. That one is just a wasted request.
+#
+# Returns non-zero only for the last case. The overnight wrap-around is not
+# checked, since a long gap there is the normal shape of a working day.
+hours_advise() {
+  local hours=$1 window=$2 arr h prev="" gap wasteful=0 wide=0
   IFS=',' read -ra arr <<<"$hours"
   if [ "${#arr[@]}" -lt 2 ]; then
     return 0
@@ -87,19 +96,24 @@ hours_check_spacing() {
   for h in "${arr[@]}"; do
     if [ -n "$prev" ]; then
       gap=$((h - prev))
-      if [ "$gap" -ne "$window" ]; then
-        printf 'warning: %02d:00 -> %02d:00 is %dh apart, but a window lasts %dh.\n' \
-          "$prev" "$h" "$gap" "$window" >&2
-        ok=1
+      if [ "$gap" -lt "$window" ]; then
+        printf 'warning: %02d:00 is only %dh after %02d:00, less than a %dh window.\n' \
+          "$h" "$gap" "$prev" "$window" >&2
+        printf '         That ping lands inside the window opened at %02d:00 and\n' "$prev" >&2
+        printf '         opens nothing. Drop it, or space them %dh apart.\n' "$window" >&2
+        wasteful=1
+      elif [ "$gap" -gt "$window" ]; then
+        wide=1
       fi
     fi
     prev=$h
   done
-  if [ "$ok" -ne 0 ]; then
-    printf '         Windows will not stay anchored across that gap.\n' >&2
-    printf '         An overnight gap is fine and expected; a daytime one is not.\n' >&2
+  if [ "$wide" -eq 1 ] && [ "$wasteful" -eq 0 ]; then
+    printf 'note: some gaps are wider than %dh, so those windows expire before the\n' "$window" >&2
+    printf '      next ping. That is a deliberate schedule, not a problem — you get\n' >&2
+    printf '      windows exactly where you asked for them.\n' >&2
   fi
-  return "$ok"
+  return "$wasteful"
 }
 
 # ---- paths ------------------------------------------------------------------

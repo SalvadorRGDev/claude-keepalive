@@ -1,15 +1,16 @@
 #!/usr/bin/env bash
 #
-# claude-keepalive — anchors your Claude usage windows to fixed hours.
+# claude-keepalive — you decide the hours at which a Claude usage window opens.
 #
-# Pings on a schedule spaced exactly WINDOW_HOURS apart, so each ping lands at
-# the moment the previous window expires and the chain of resets never drifts.
+# A ping can only ever OPEN a window; it can never close one early or move a
+# boundary. So the hours you schedule are guaranteed window starts, and that is
+# what gives you control over when your resets land.
 #
-# This does NOT grant extra quota. See README.md.
+# This grants no extra quota. See README.md.
 
 set -euo pipefail
 
-VERSION="1.1.0"
+VERSION="2.0.0"
 PROGRAM="claude-keepalive"
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -29,21 +30,20 @@ CLAUDE_BIN=""                            # empty = auto-discover
 CLAUDE_HOME="$HOME/.claude"
 MODEL="claude-haiku-4-5-20251001"        # cheapest; the window is shared
 PROMPT="ok"
-HOURS="6,11,16,21"                       # ping hours, WINDOW_HOURS apart
+HOURS="6,11,16,21"                       # hours at which to open a window
 WINDOW_HOURS=5                           # length of a Claude usage window
-
-# Off by default, and that is deliberate. Skipping a ping because you happen to
-# be active breaks the chain: the next window then starts whenever you send a
-# message instead of on the hour, and every reset after it drifts. A window that
-# is already half elapsed is not half an allowance — you can spend all of it in
-# the time that remains and still get a fresh window at the next boundary. Set
-# this to 1 only if you would rather save four trivial pings a day than keep
-# your reset times predictable.
-SKIP_IF_ACTIVE=0
-
 MAX_BUDGET_USD="0.05"                    # hard spend ceiling per ping
 PING_TIMEOUT=120                         # seconds before a ping is killed
 LOG_MAX_LINES=500
+
+# There is deliberately no option to skip a ping when you have been active
+# recently. Such a check can only ask "was there activity in the last
+# WINDOW_HOURS?", which is not the same question as "is a window open?" — and it
+# answers wrongly at exactly the moment that matters. If a window opened at T and
+# your last message was at A, then at T+WINDOW_HOURS, when the window expires and
+# the ping is due, the age of that activity is under WINDOW_HOURS. The check says
+# "skip" at every single boundary. Getting it right needs the window's start
+# time, which local data does not reliably give us. So pings are unconditional.
 
 # shellcheck source=/dev/null
 [ -r "$CONFIG_FILE" ] && . "$CONFIG_FILE"
@@ -70,8 +70,8 @@ die() {
 
 fmt_dur() { printf '%dh%02dm' $(($1 / 3600)) $((($1 % 3600) / 60)); }
 
-# The backend library is only needed by `schedule`, so it is loaded on demand:
-# a missing lib must never stop a ping from firing.
+# The backend library is only needed by `schedule` and `status`, so it is loaded
+# on demand: a missing lib must never stop a ping from firing.
 load_backend_lib() {
   local cand
   for cand in \
@@ -111,8 +111,8 @@ find_claude() {
   return 1
 }
 
-# Epoch seconds of the most recent real Claude Code activity, from transcript
-# mtimes. GNU find has -printf; BSD/macOS find does not.
+# Epoch seconds of the most recent Claude Code activity, from transcript mtimes.
+# GNU find has -printf; BSD/macOS find does not.
 newest_activity_epoch() {
   local dir="$CLAUDE_HOME/projects" newest=""
   [ -d "$dir" ] || return 1
@@ -128,15 +128,25 @@ newest_activity_epoch() {
   printf '%s' "$newest"
 }
 
-# Age in seconds of activity inside the current window, or failure if the last
-# activity is older than a window.
-window_age() {
-  local last now age
-  last=$(newest_activity_epoch) || return 1
-  now=$(date +%s)
-  age=$((now - last))
-  [ "$age" -lt $((WINDOW_HOURS * 3600)) ] || return 1
-  printf '%s' "$age"
+# Seconds until the next scheduled hour, and which hour that is: "<hour> <secs>".
+# Deliberately avoids `date -d`, which macOS does not have.
+next_ping() {
+  local hh mm ss now_s h arr d best_d="" best_h=""
+  hh=$((10#$(date +%H)))
+  mm=$((10#$(date +%M)))
+  ss=$((10#$(date +%S)))
+  now_s=$((hh * 3600 + mm * 60 + ss))
+  IFS=',' read -ra arr <<<"$1"
+  for h in "${arr[@]}"; do
+    d=$(((10#$h) * 3600 - now_s))
+    [ "$d" -le 0 ] && d=$((d + 86400))
+    if [ -z "$best_d" ] || [ "$d" -lt "$best_d" ]; then
+      best_d=$d
+      best_h=$((10#$h))
+    fi
+  done
+  [ -n "$best_d" ] || return 1
+  printf '%s %s' "$best_h" "$best_d"
 }
 
 # --restricted drops the code-running tools AND ignores user, project and local
@@ -162,23 +172,11 @@ build_cmd() {
 # ---- subcommands ------------------------------------------------------------
 
 cmd_ping() {
-  local dry=${1:-0} bin age
+  local dry=${1:-0} bin
   bin=$(find_claude) || {
     log "ERROR: claude binary not found; set CLAUDE_BIN in $CONFIG_FILE"
     die "claude binary not found; set CLAUDE_BIN in $CONFIG_FILE"
   }
-
-  if [ "$SKIP_IF_ACTIVE" -eq 1 ] && age=$(window_age); then
-    local msg
-    msg="skip: window already open (last activity $(fmt_dur "$age") ago)"
-    if [ "$dry" -eq 1 ]; then
-      printf '%s\n' "$msg"
-      return 0
-    fi
-    log "$msg"
-    rotate_log
-    return 0
-  fi
 
   build_cmd "$bin"
 
@@ -206,7 +204,7 @@ cmd_ping() {
   return "$rc"
 }
 
-# Change the ping hours in place, with no reinstall.
+# Change the hours in place, with no reinstall.
 cmd_schedule() {
   local new="" backend
 
@@ -223,7 +221,7 @@ cmd_schedule() {
     die "not installed — run ./install.sh first (nothing to reschedule)"
 
   load_backend_lib ||
-    die "backend library not found next to $SELF_DIR — reinstall to get it"
+    die "backend library not found near $SELF_DIR — reinstall to get it"
 
   # No hours given: report the schedule rather than change it.
   if [ -z "$new" ]; then
@@ -235,7 +233,7 @@ cmd_schedule() {
   fi
 
   new=$(hours_normalize "$new") || die "could not parse hours"
-  hours_check_spacing "$new" "$WINDOW_HOURS" || true
+  hours_advise "$new" "$WINDOW_HOURS" || true
 
   local bin
   bin=$(manifest_field file | grep "/bin/$PROGRAM\$" | head -1)
@@ -257,7 +255,7 @@ cmd_schedule() {
 }
 
 cmd_status() {
-  local bin age backend
+  local bin backend last now age np nh nd
   printf '%s %s\n\n' "$PROGRAM" "$VERSION"
 
   if bin=$(find_claude); then
@@ -269,17 +267,26 @@ cmd_status() {
     "$([ -r "$CONFIG_FILE" ] || printf ' (missing, using defaults)')"
   printf 'model         : %s\n' "$MODEL"
   printf 'hours         : %s\n' "$HOURS"
-  if [ "$SKIP_IF_ACTIVE" -eq 1 ]; then
-    printf 'skip-if-active: yes (windows may drift — see README)\n'
-  else
-    printf 'skip-if-active: no (pings unconditionally, keeps windows anchored)\n'
+
+  if np=$(next_ping "$HOURS"); then
+    nh=${np% *}
+    nd=${np#* }
+    printf 'next ping     : %02d:00 (in %s)\n' "$nh" "$(fmt_dur "$nd")"
   fi
 
-  if age=$(window_age); then
-    printf 'window        : OPEN (last activity %s ago, closes in %s)\n' \
-      "$(fmt_dur "$age")" "$(fmt_dur $((WINDOW_HOURS * 3600 - age)))"
+  # Report only what transcript mtimes can actually tell us. A message inside a
+  # window proves a window is open; it does NOT reveal when that window started,
+  # so its expiry is not knowable from here.
+  if last=$(newest_activity_epoch); then
+    now=$(date +%s)
+    age=$((now - last))
+    if [ "$age" -lt $((WINDOW_HOURS * 3600)) ]; then
+      printf 'last activity : %s ago — a window is open\n' "$(fmt_dur "$age")"
+    else
+      printf 'last activity : %s ago — no window open\n' "$(fmt_dur "$age")"
+    fi
   else
-    printf 'window        : closed (next ping will open one)\n'
+    printf 'last activity : none found\n'
   fi
 
   backend=$(manifest_field backend 2>/dev/null || true)
@@ -294,13 +301,20 @@ cmd_status() {
     printf '\nlast log lines:\n'
     tail -n 5 "$LOG_FILE" | sed 's/^/  /'
   fi
+
+  # Removed in 2.0.0. Warn rather than ignore it silently, so anyone who set it
+  # is not left wondering why nothing is being skipped.
+  if [ -r "$CONFIG_FILE" ] && grep -qE '^[[:space:]]*SKIP_IF_ACTIVE=' "$CONFIG_FILE"; then
+    printf '\nnote: SKIP_IF_ACTIVE was removed in 2.0.0 and no longer does anything.\n'
+    printf '      Pings are always unconditional. Delete the line from your config.\n'
+  fi
 }
 
 cmd_logs() { [ -r "$LOG_FILE" ] && tail -n "${1:-50}" "$LOG_FILE" || printf 'no log yet\n'; }
 
 usage() {
   cat <<EOF
-$PROGRAM $VERSION — anchor your Claude usage windows to fixed hours.
+$PROGRAM $VERSION — you decide the hours at which a Claude usage window opens.
 
 usage: $PROGRAM <command>
 
@@ -308,15 +322,19 @@ commands:
   ping                  Open a window now (what the timer calls)
   test                  Dry run: print the exact ping command, send nothing
   schedule              Show the active schedule
-  schedule <hours>      Change the ping hours in place, no reinstall
-                        e.g. $PROGRAM schedule 7,12,17,22
-                             $PROGRAM schedule --hours "7,12,17,22"
-  status                Binary, config, window state, schedule, recent log
+  schedule <hours>      Change the hours in place, no reinstall
+                        e.g. $PROGRAM schedule 6,11,16,21
+                             $PROGRAM schedule 6,18
+                             $PROGRAM schedule --hours "6,14,22"
+  status                Binary, config, next ping, window state, recent log
   logs [n]              Last n log lines (default 50)
   version               Print version
 
-Hours should sit exactly WINDOW_HOURS apart ($WINDOW_HOURS h) so each ping lands
-when the previous window expires and your resets never drift.
+A ping only ever opens a window; it cannot close one early or move a boundary.
+So the hours you pick are guaranteed window starts. Spacing them exactly
+WINDOW_HOURS apart ($WINDOW_HOURS h) pins every boundary; spacing them wider
+gives you fewer, deliberately placed windows. Both are valid — see the
+"Choosing your hours" section of the README.
 
 config: $CONFIG_FILE
 log:    $LOG_FILE

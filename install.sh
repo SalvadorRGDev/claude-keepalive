@@ -120,7 +120,7 @@ fi
 say "backend : $BACKEND"
 say "hours   : $HOURS"
 say "script  : $BIN_DEST"
-hours_check_spacing "$HOURS" "$WINDOW_HOURS" || true
+hours_advise "$HOURS" "$WINDOW_HOURS" || true
 [ "$DRY_RUN" -eq 1 ] && note "DRY RUN — nothing below is actually performed."
 
 # ---- 1. script and library --------------------------------------------------
@@ -188,7 +188,7 @@ if [ "$DRY_RUN" -eq 1 ]; then
   exit 0
 fi
 
-record version "1.1.0"
+record version "2.0.0"
 record installed "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
 note "installed."
